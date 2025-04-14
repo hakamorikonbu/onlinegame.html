@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>オンライン銃撃戦ゲーム</title>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+    }
+    canvas {
+      display: block;
+      background-color: #ba5b1c;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas"></canvas>
+
+  <script>
+    var kill = 0;
+    var gunt = true;
+    var bombt = true;
+    var trapt = true;
+    var lastDx = 0;
+    var lastDy = 0;
+
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const canvaswidth = 2000;
+    const canvasheight = 1000;
+
+    function resizeCanvas() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    resizeCanvas();
+    window.addEventListener('resize', resizeCanvas);
+
+    const walls = [
+      { x: 50, y: 50, width: 400, height: 20 },
+      { x: 50, y: 50, width: 20, height: 400 },
+      { x: 500, y: 200, width: 20, height: 300 },
+      { x: 700, y: 400, width: 300, height: 20 },
+      { x: 1000, y: 100, width: 20, height: 400 },
+      { x: 1200, y: 600, width: 400, height: 20 },
+      { x: 1600, y: 50, width: 20, height: 600 },
+      { x: 1300, y: 800, width: 300, height: 20 },
+      { x: 800, y: 700, width: 20, height: 200 },
+      { x: 200, y: 900, width: 400, height: 20 },
+      { x: 50, y: 600, width: 20, height: 300 },
+    ];
+
+    const playerName = prompt("あなたの名前を入力してください", "ピヨ");
+    const gameName = prompt("部屋の名前を入力してください（何も入力しない場合はpublic（公開部屋）になります。）") || "public";
+    let pcolor = prompt("色を入力してください (例: red, green, blue, yellow, orange, purple , pinkなど。一部未対応あり。)");
+    const validColors = ['red', 'green', 'blue', 'yellow', 'orange', 'purple', 'pink', "brown"];
+    if (!validColors.includes(pcolor.toLowerCase())) {
+      pcolor = 'blue';
+    }
+    const player = {
+      x: Math.random() * canvaswidth,
+      y: Math.random() * canvasheight,
+      radius: 20,
+      color: pcolor,
+      speed: 20,
+      hp: 100,
+      maxHp: 100,
+      name: playerName,
+      slowed: false,
+      slowTimer: 0
+    };
+
+    const bullets = [];
+    const bombs = [];
+    const traps = [];
+    const players = {};
+
+    const generateId = () => Math.random().toString(36).substr(2, 9);
+    const playerId = generateId();
+
+    const socket = new WebSocket('wss://cloud.achex.ca/yajusenpaiikisug1');
+
+    socket.addEventListener('open', (event) => {
+      socket.send(`{"auth":"${playerId}", "password":"pass"}`);
+      socket.send(`{"joinHub":"${gameName}"}`);
+    });
+
+    socket.addEventListener('message', (event) => {
+      const json = JSON.parse(event.data);
+      if (json.auth === 'OK' || json.joinHub === 'OK') return;
+      if (json.msg) {
+        const data = JSON.parse(json.msg);
+        if (data.x !== undefined && data.y !== undefined && data.id !== playerId) {
+          players[data.id] = { 
+            x: data.x, 
+            y: data.y, 
+            radius: 20, 
+            color: data.color, 
+            name: data.name, 
+            hp: data.hp || 100, 
+            maxHp: 100 
+          };
+        }
+        if (data.quit) delete players[data.quit];
+        if (data.bullet) {
+          bullets.push(JSON.parse(data.bullet));
+        }
+        if (data.bomb) bombs.push(JSON.parse(data.bomb));
+        if (data.trap) traps.push(JSON.parse(data.trap));
+        if (data.kill && data.id == playerId) {
+          kill++;
+          player.hp += 10;
+        }
+      }
+    });
+
+    let mouseX = 0, mouseY = 0;
+
+    const weapons = {
+      handgun: { fireRate: 80, power: 15, speed: 15 },
+      machinegun: { fireRate: 40, power: 5, speed: 20 },
+      sniper: { fireRate: 2000, power: 80, speed: 25 },
+      railgun: { fireRate: 4000, power: 90, speed: 25 },
+      trap: { fireRate: 1000 }
+    };
+
+    let currentWeapon = "handgun";
+    let shooting = false;
+    let gumInterval = null;
+
+    function gum() { gunt = true; }
+    function trapCooldown() { trapt = true; }
+    function updateGunInterval() {
+      if (gumInterval) clearInterval(gumInterval);
+      gumInterval = setInterval(gum, weapons[currentWeapon].fireRate);
+    }
+    updateGunInterval();
+
+    canvas.addEventListener('mousemove', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      mouseX = (e.clientX - rect.left) * (canvas.width / rect.width);
+      mouseY = (e.clientY - rect.top) * (canvas.height / rect.height);
+    });
+
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "1") currentWeapon = "handgun";
+      if (e.key === "2") currentWeapon = "machinegun";
+      if (e.key === "3") currentWeapon = "sniper";
+      if (e.key === "4") currentWeapon = "railgun";
+      if (e.key === "5") currentWeapon = "trap";
+      updateGunInterval();
+    });
+
+    window.addEventListener('mousedown', () => {
+      if (shooting || currentWeapon === "trap") return;
+      shooting = true;
+
+      if (currentWeapon === "machinegun") {
+        fireWeaponMouse();
+        shootingInterval = setInterval(fireWeaponMouse, weapons[currentWeapon].fireRate);
+      } else if (currentWeapon === "sniper") {
+        setTimeout(() => fireWeaponMouse(), 2000);
+      } else if (currentWeapon === "railgun") {
+        setTimeout(() => fireWeaponMouse(), 8000);
+      } else {
+        fireWeaponMouse();
+      }
+    });
+
+    window.addEventListener('mouseup', () => {
+      shooting = false;
+      if (shootingInterval) clearInterval(shootingInterval);
+    });
+
+    function fireWeaponMouse() {
+      if (!gunt) return;
+      gunt = false;
+
+      let weapon = weapons[currentWeapon];
+      const worldMouseX = mouseX + scrollX;
+      const worldMouseY = mouseY + scrollY;
+      const dx = worldMouseX - player.x;
+      const dy = worldMouseY - player.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      if (distance === 0) return;
+
+      const bullet = {
+        power: weapon.power,
+        x: player.x,
+        y: player.y,
+        radius: 7,
+        dx: (dx / distance) * weapon.speed,
+        dy: (dy / distance) * weapon.speed,
+        ownerId: playerId
+      };
+
+      bullets.push(bullet);
+      socket.send(JSON.stringify({
+        toH: `${gameName}`,
+        msg: JSON.stringify({ bullet: JSON.stringify(bullet), id: playerId })
+      }));
+    }
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'f' && currentWeapon !== "trap") {
+        if (currentWeapon === "sniper") {
+          setTimeout(() => fireWeaponDirection(), 2000);
+        } else if (currentWeapon === "railgun") {
+          setTimeout(() => fireWeaponDirection(), 8000);
+        } else {
+          fireWeaponDirection();
+        }
+      }
+    });
+
+    function fireWeaponDirection() {
+      if (!gunt) return;
+      gunt = false;
+
+      let weapon = weapons[currentWeapon];
+      const distance = Math.sqrt(lastDx * lastDx + lastDy * lastDy);
+      if (distance === 0) return;
+
+      const bullet = {
+        power: weapon.power,
+        x: player.x,
+        y: player.y,
+        radius: 5,
+        dx: (lastDx / distance) * weapon.speed,
+        dy: (lastDy / distance) * weapon.speed,
+        ownerId: playerId
+      };
+
+      bullets.push(bullet);
+      socket.send(JSON.stringify({
+        toH: `${gameName}`,
+        msg: JSON.stringify({ bullet: JSON.stringify(bullet), id: playerId })
+      }));
+    }
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 't' && trapt && currentWeapon === "trap") {
+        trapt = false;
+        const trap = {
+          x: player.x,
+          y: player.y,
+          radius: 15,
+          ownerId: playerId,
+          active: true,
+          duration: 300
+        };
+        traps.push(trap);
+        socket.send(JSON.stringify({
+          toH: `${gameName}`,
+          msg: JSON.stringify({ trap: JSON.stringify(trap), id: playerId })
+        }));
+        setTimeout(trapCooldown, weapons.trap.fireRate);
+      }
+    });
+
+    function checkCollisionWithWall(x, y, radius) {
+      for (const wall of walls) {
+        if (x + radius > wall.x && x - radius < wall.x + wall.width &&
+            y + radius > wall.y && y - radius < wall.y + wall.height) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function checkBulletCollision(bullet) {
+      const distance = Math.sqrt(Math.pow(player.x - bullet.x, 2) + Math.pow(player.y - bullet.y, 2));
+      if (distance < player.radius + bullet.radius && bullet.ownerId !== playerId) {
+        player.hp -= bullet.power;
+        if (player.hp > 0) return;
+        socket.send(JSON.stringify({
+          toH: `${gameName}`,
+          msg: JSON.stringify({ id: bullet.ownerId, kill: "kill" })
+        }));
+      }
+
+      for (const id in players) {
+        const enemy = players[id];
+        const enemyDistance = Math.sqrt(Math.pow(enemy.x - bullet.x, 2) + Math.pow(enemy.y - bullet.y, 2));
+        if (enemyDistance < enemy.radius + bullet.radius && bullet.ownerId === playerId) {
+          enemy.hp -= bullet.power;
+          if (enemy.hp <= 0) {
+            delete players[id];
+            socket.send(JSON.stringify({
+              toH: `${gameName}`,
+              msg: JSON.stringify({ id: playerId, kill: "kill" })
+            }));
+          }
+        }
+      }
+    }
+
+    function handleTraps() {
+      traps.forEach((trap, i) => {
+        trap.duration -= 0.1;
+        if (trap.duration <= 0) {
+          traps.splice(i, 1);
+          return;
+        }
+
+        const distance = Math.sqrt(Math.pow(player.x - trap.x, 2) + Math.pow(player.y - trap.y, 2));
+        if (distance < trap.radius + player.radius && trap.ownerId !== playerId && !player.slowed) {
+          player.slowed = true;
+          player.slowTimer = 2;
+          player.speed = 5;
+          traps.splice(i, 1);
+        }
+
+        for (const id in players) {
+          const enemy = players[id];
+          const enemyDistance = Math.sqrt(Math.pow(enemy.x - trap.x, 2) + Math.pow(enemy.y - trap.y, 2));
+          if (enemyDistance < trap.radius + enemy.radius && trap.ownerId === playerId && !enemy.slowed) {
+            enemy.slowed = true;
+            enemy.slowTimer = 2;
+            enemy.speed = 5;
+            traps.splice(i, 1);
+            break;
+          }
+        }
+      });
+
+      if (player.slowed) {
+        player.slowTimer -= 0.1;
+        if (player.slowTimer <= 0) {
+          player.slowed = false;
+          player.speed = 20;
+        }
+      }
+
+      for (const id in players) {
+        const enemy = players[id];
+        if (enemy.slowed) {
+          enemy.slowTimer -= 0.1;
+          if (enemy.slowTimer <= 0) {
+            enemy.slowed = false;
+            enemy.speed = 20;
+          }
+        }
+      }
+    }
+
+    window.addEventListener('keydown', (e) => {
+      let newX = player.x;
+      let newY = player.y;
+
+      if (e.key === 'ArrowUp') {
+        newY = player.y - player.speed;
+        lastDx = 0;
+        lastDy = -player.speed;
+      }
+      if (e.key === 'ArrowDown') {
+        newY = player.y + player.speed;
+        lastDx = 0;
+        lastDy = player.speed;
+      }
+      if (e.key === 'ArrowLeft') {
+        newX = player.x - player.speed;
+        lastDx = -player.speed;
+        lastDy = 0;
+      }
+      if (e.key === 'ArrowRight') {
+        newX = player.x + player.speed;
+        lastDx = player.speed;
+        lastDy = 0;
+      }
+
+      newX = Math.max(player.radius, Math.min(canvaswidth - player.radius, newX));
+      newY = Math.max(player.radius, Math.min(canvasheight - player.radius, newY));
+
+      if (!checkCollisionWithWall(newX, newY, player.radius)) {
+        player.x = newX;
+        player.y = newY;
+      }
+
+      socket.send(JSON.stringify({
+        toH: `${gameName}`,
+        msg: JSON.stringify({ id: playerId, x: player.x, y: player.y, color: player.color, name: playerName, hp: player.hp })
+      }));
+    });
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'b') {
+        if (bombt === false) return;
+        bombt = false;
+        const bomb = {
+          x: player.x,
+          y: player.y,
+          radius: 30,
+          ownerId: playerId,
+          timer: 5,
+          explosionRadius: 0,
+          maxExplosionRadius: 150,
+          isExploded: false,
+          timeOfExplosion: null
+        };
+
+        socket.send(JSON.stringify({
+          toH: `${gameName}`,
+          msg: JSON.stringify({ bomb: JSON.stringify(bomb), id: playerId })
+        }));
+        bombs.push(bomb);
+      }
+    });
+
+    function handleBombs() {
+      bombs.forEach(bomb => {
+        if (bomb.timer > 0) {
+          bomb.timer -= 0.1;
+        } else if (!bomb.isExploded) {
+          bomb.isExploded = true;
+          bomb.timeOfExplosion = Date.now();
+          let explosionInterval = setInterval(() => {
+            if (bomb.explosionRadius < bomb.maxExplosionRadius) bomb.explosionRadius += 10;
+            else clearInterval(explosionInterval);
+          }, 50);
+        }
+
+        if (bomb.timeOfExplosion && Date.now() - bomb.timeOfExplosion > 3000) {
+          bombs.splice(bombs.indexOf(bomb), 1);
+        }
+
+        const distance = Math.sqrt(Math.pow(player.x - bomb.x, 2) + Math.pow(player.y - bomb.y, 2));
+        if (bomb.isExploded && distance < bomb.explosionRadius && bomb.ownerId !== playerId) {
+          player.hp -= 5;
+        }
+
+        for (const id in players) {
+          const enemy = players[id];
+          const enemyDistance = Math.sqrt(Math.pow(enemy.x - bomb.x, 2) + Math.pow(enemy.y - bomb.y, 2));
+          if (bomb.isExploded && enemyDistance < bomb.explosionRadius && bomb.ownerId === playerId) {
+            enemy.hp -= 5;
+            if (enemy.hp <= 0) {
+              delete players[id];
+              socket.send(JSON.stringify({
+                toH: `${gameName}`,
+                msg: JSON.stringify({ id: playerId, kill: "kill" })
+              }));
+            }
+          }
+        }
+      });
+    }
+
+    let scrollX = 0, scrollY = 0;
+
+    function scrollStage() {
+      const canvasCenterX = canvas.width / 2;
+      const canvasCenterY = canvas.height / 2;
+      scrollX = Math.max(0, Math.min(canvaswidth - canvas.width, player.x - canvasCenterX));
+      scrollY = Math.max(0, Math.min(canvasheight - canvas.height, player.y - canvasCenterY));
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.translate(-scrollX, -scrollY);
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvaswidth, canvasheight);
+      scrollStage();
+
+      ctx.strokeStyle = 'red';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(0, 0, canvaswidth, canvasheight);
+
+      ctx.fillStyle = 'gray';
+      walls.forEach(wall => ctx.fillRect(wall.x, wall.y, wall.width, wall.height));
+
+      ctx.beginPath();
+      ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);
+      ctx.fillStyle = player.color;
+      ctx.fill();
+      ctx.closePath();
+      ctx.fillStyle = 'black';
+      ctx.font = '24px Arial';
+      ctx.fillText(`HP: ${player.hp}`, player.x - 30, player.y - 40);
+      ctx.font = '12px Arial';
+      ctx.fillText(player.name, player.x - player.radius, player.y - player.radius - 5);
+
+      for (const id in players) {
+        const enemy = players[id];
+        ctx.beginPath();
+        ctx.arc(enemy.x, enemy.y, enemy.radius, 0, Math.PI * 2);
+        ctx.fillStyle = enemy.color;
+        ctx.fill();
+        ctx.closePath();
+
+        const hpBarWidth = 40;
+        const hpBarHeight = 5;
+        const hpRatio = enemy.hp / enemy.maxHp;
+        ctx.fillStyle = 'red';
+        ctx.fillRect(enemy.x - hpBarWidth / 2, enemy.y - enemy.radius - 15, hpBarWidth, hpBarHeight);
+        ctx.fillStyle = 'green';
+        ctx.fillRect(enemy.x - hpBarWidth / 2, enemy.y - enemy.radius - 15, hpBarWidth * hpRatio, hpBarHeight);
+
+        ctx.fillStyle = 'black';
+        ctx.font = '12px Arial';
+        ctx.fillText(`${enemy.name} (HP: ${enemy.hp})`, enemy.x - enemy.radius, enemy.y - enemy.radius - 25);
+      }
+
+      bullets.forEach(bullet => {
+        ctx.beginPath();
+        ctx.arc(bullet.x, bullet.y, bullet.radius, 0, Math.PI * 2);
+        ctx.fillStyle = bullet.ownerId === playerId ? 'blue' : 'red';
+        ctx.fill();
+        ctx.closePath();
+        checkBulletCollision(bullet);
+      });
+
+      bombs.forEach(bomb => {
+        ctx.beginPath();
+        ctx.arc(bomb.x, bomb.y, bomb.radius, 0, Math.PI * 2);
+        ctx.fillStyle = bomb.ownerId === playerId ? 'blue' : 'orange';
+        ctx.fill();
+        ctx.closePath();
+
+        if (bomb.isExploded) {
+          ctx.beginPath();
+          ctx.arc(bomb.x, bomb.y, bomb.explosionRadius, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(255, 0, 0, 0.5)';
+          ctx.fill();
+          ctx.closePath();
+        }
+      });
+
+      traps.forEach(trap => {
+        ctx.beginPath();
+        ctx.arc(trap.x, trap.y, trap.radius, 0, Math.PI * 2);
+        ctx.fillStyle = trap.ownerId === playerId ? 'gray' : 'purple';
+        ctx.fill();
+        ctx.closePath();
+      });
+
+      if (player.hp <= 0) {
+        socket.send(JSON.stringify({
+          toH: `${gameName}`,
+          msg: JSON.stringify({ quit: playerId })
+        }));
+        alert('ゲームオーバー！');
+        window.location.reload();
+        return;
+      }
+
+      handleBombs();
+      handleTraps();
+      updateBullets();
+      requestAnimationFrame(draw);
+    }
+
+    function updateBullets() {
+      for (let i = 0; i < bullets.length; i++) {
+        const bullet = bullets[i];
+        bullet.x += bullet.dx;
+        bullet.y += bullet.dy;
+
+        if (checkCollisionWithWall(bullet.x, bullet.y, bullet.radius) ||
+            bullet.x < 0 || bullet.x > canvaswidth || bullet.y < 0 || bullet.y > canvasheight) {
+          bullets.splice(i, 1);
+          i--;
+        }
+      }
+    }
+
+    window.onbeforeunload = () => {
+      socket.send(JSON.stringify({
+        toH: `${gameName}`,
+        msg: JSON.stringify({ quit: playerId })
+      }));
+    };
+
+    window.onblur = () => {
+      socket.send(JSON.stringify({
+        toH: `${gameName}`,
+        msg: JSON.stringify({ quit: playerId })
+      }));
+      window.location.reload();
+    };
+
+    draw();
+
+    function recovery() {
+      bombt = true;
+      if (player.hp < player.maxHp) player.hp++;
+    }
+
+    setInterval(recovery, 3000);
+  </script>
+</body>
+</html>
